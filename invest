@@ -1,0 +1,123 @@
+import streamlit as st
+import pandas as pd
+import pandas_ta as ta
+import ccxt
+import google.generativeai as genai
+from twilio.rest import Client
+import plotly.graph_objects as go
+
+# --- CONFIGURAÇÃO DA PÁGINA ---
+st.set_page_config(page_title="Terminal Quant Pro 2026", layout="wide")
+st.markdown("<style>.stButton>button {width:100%; height:3em; font-weight:bold;}</style>", unsafe_allow_index=True)
+
+# --- CONEXÕES E SEGURANÇA (SECRETS) ---
+try:
+    # IA Gemini
+    genai.configure(api_key=st.secrets["GEMINI_KEY"])
+    model = genai.GenerativeModel('gemini-1.5-flash')
+    
+    # Corretora (Exemplo Cripto/Futuros)
+    exchange = ccxt.binance({
+        'apiKey': st.secrets["BINANCE_KEY"],
+        'secret': st.secrets["BINANCE_SECRET"],
+        'options': {'defaultType': 'future'}
+    })
+    
+    # WhatsApp (Twilio)
+    twilio_client = Client(st.secrets["TWILIO_SID"], st.secrets["TWILIO_TOKEN"])
+except Exception as e:
+    st.error(f"Erro na configuração das chaves: {e}")
+
+# --- FUNÇÕES DE INTELIGÊNCIA ---
+
+def get_data(symbol):
+    bars = exchange.fetch_ohlcv(symbol, timeframe='15m', limit=100)
+    df = pd.DataFrame(bars, columns=['time', 'open', 'high', 'low', 'close', 'vol'])
+    # Indicadores Técnicos
+    df['RSI'] = ta.rsi(df['close'], length=14)
+    df['EMA200'] = ta.ema(df['close'], length=200)
+    bb = ta.bbands(df['close'], length=20)
+    df['BBL'] = bb['BBL_20_2.0']
+    return df
+
+def analise_sentimento(ticker):
+    # Simulação de busca de notícia (integrar NewsAPI aqui)
+    prompt = f"Analise o clima atual do mercado para {ticker}. Responda apenas: POSITIVO, NEGATIVO ou NEUTRO."
+    response = model.generate_content(prompt)
+    return response.text.strip()
+
+def enviar_whatsapp(msg):
+    twilio_client.messages.create(
+        from_=st.secrets["TWILIO_NUMBER"],
+        body=msg,
+        to=st.secrets["MY_WHATSAPP"]
+    )
+
+# --- DASHBOARD UI ---
+
+st.title("🚀 Terminal Quant & IA")
+
+ticker = st.sidebar.selectbox("Ativo", ["BTC/USDT", "ETH/USDT", "SOL/USDT"])
+quantidade = st.sidebar.number_input("Quantidade da Ordem", min_value=0.001, value=0.01, step=0.001)
+
+tab1, tab2, tab3 = st.tabs(["📊 Gráficos & Sinais", "📰 IA & Sentimento", "🛡️ Execução & Risco"])
+
+with tab1:
+    df = get_data(ticker)
+    last_price = df['close'].iloc[-1]
+    last_rsi = df['RSI'].iloc[-1]
+    
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Preço Atual", f"${last_price:,.2f}")
+    col2.metric("RSI (14)", f"{last_rsi:.2f}")
+    col3.metric("Trend (EMA200)", "BULL" if last_price > df['EMA200'].iloc[-1] else "BEAR")
+
+    # Gráfico Candlestick
+    fig = go.Figure(data=[go.Candlestick(x=df['time'], open=df['open'], high=df['high'], low=df['low'], close=df['close'], name='Preço')])
+    fig.add_trace(go.Scatter(x=df['time'], y=df['EMA200'], line=dict(color='orange', width=2), name='EMA 200'))
+    st.plotly_chart(fig, use_container_width=True)
+
+with tab2:
+    st.subheader("Análise de Sentimento (Gemini AI)")
+    if st.button("🔍 Escanear Notícias & Sentimento"):
+        sentimento = analise_sentimento(ticker)
+        if sentimento == "POSITIVO":
+            st.success(f"Sentimento para {ticker}: {sentimento} ✅")
+        elif sentimento == "NEGATIVO":
+            st.error(f"Sentimento para {ticker}: {sentimento} ❌")
+        else:
+            st.warning(f"Sentimento para {ticker}: {sentimento} ⚖️")
+
+with tab3:
+    st.subheader("Central de Ordens")
+    c1, c2 = st.columns(2)
+    
+    if c1.button("🚀 COMPRA (LONG)", type="secondary"):
+        # Lógica de Ordem
+        try:
+            order = exchange.create_market_buy_order(ticker, quantidade)
+            st.success(f"Ordem de Compra Executada! ID: {order['id']}")
+            enviar_whatsapp(f"✅ ORDEM EXECUTADA: Compra de {quantidade} {ticker}")
+        except Exception as e:
+            st.error(f"Falha na ordem: {e}")
+
+    if c2.button("📉 VENDA (SHORT)"):
+        try:
+            order = exchange.create_market_sell_order(ticker, quantidade)
+            st.success(f"Ordem de Venda Executada! ID: {order['id']}")
+        except Exception as e:
+            st.error(f"Falha na ordem: {e}")
+
+    st.divider()
+    st.header("🆘 ZONA DE EMERGÊNCIA")
+    confirm = st.checkbox("Eu autorizo o fechamento imediato de todas as posições.")
+    if st.button("💥 KILL SWITCH - ZERAR TUDO", type="primary"):
+        if confirm:
+            st.write("Acionando APIs para zeragem...")
+            # Aqui entraria a função kill_switch() detalhada anteriormente
+        else:
+            st.warning("Marque a confirmação antes de acionar.")
+
+# --- FOOTER ---
+st.sidebar.markdown("---")
+st.sidebar.info("Sistema operando via Cloud Server. Status: Ativo 🟢")
